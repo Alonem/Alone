@@ -1,88 +1,88 @@
-const { create, Client } = require('@open-wa/wa-automate')
-const figlet = require('figlet')
-const options = require('./utils/options')
-const { color, messageLog } = require('./utils')
-const HandleMsg = require('./HandleMsg')
+const request = require('request')
+const fs = require('fs-extra')
+const chalk = require('chalk')
+const moment = require('moment-timezone')
+moment.tz.setDefault('Asia/Jakarta').locale('id')
 
-const start = (aruga = new Client()) => {
-    console.log(color(figlet.textSync('----------------', { horizontalLayout: 'default' })))
-    console.log(color(figlet.textSync('TURKCE BOT', { font: 'Ghost', horizontalLayout: 'default' })))
-    console.log(color(figlet.textSync('----------------', { horizontalLayout: 'default' })))
-    console.log(color('[DEV]'), color('Powered by Eray', 'yellow'))
-    console.log(color('[~>>]'), color('BOT başladı!', 'green'))
-
-    // Mempertahankan sesi agar tetap nyala
-    aruga.onStateChanged((state) => {
-        console.log(color('[~>>]', 'red'), state)
-        if (state === 'CONFLICT' || state === 'BAŞLATILMAMIŞ') aruga.forceRefocus()
-    })
-
-    // ketika bot diinvite ke dalam group
-    aruga.onAddedToGroup(async (chat) => {
-	const groups = await aruga.getAllGroups()
-	// kondisi ketika batas group bot telah tercapai,ubah di file settings/setting.json
-	if (groups.length > groupLimit) {
-	await aruga.sendText(chat.id, `Grup girme davetiniz kontrol edilecektir... \ nMax Group: $ {groupLimit}`).then(() => {
-	      aruga.leaveGroup(chat.id)
-	      aruga.deleteChat(chat.id)
-	  }) 
-	} else {
-	// kondisi ketika batas member group belum tercapai, ubah di file settings/setting.json
-	    if (chat.groupMetadata.participants.length < memberLimit) {
-	    await aruga.sendText(chat.id, `Üzgünüz, grup üye sayısı istenilenden azdır eğer yine de girmemi isterseniz özelden grup linki atınız. ${memberLimit} people`).then(() => {
-	      aruga.leaveGroup(chat.id)
-	      aruga.deleteChat(chat.id)
-	    })
-	    } else {
-        await aruga.simulateTyping(chat.id, true).then(async () => {
-          await aruga.sendText(chat.id, `Merhaba Grup ~, Ben BOT. Bu bot üzerindeki komutları öğrenmek için ${prefix}menu`)
-        })
-	    }
-	}
-    })
-
-    // ketika seseorang masuk/keluar dari group
-    aruga.onGlobalParicipantsChanged(async (event) => {
-        const host = await aruga.getHostNumber()
-        // kondisi ketika seseorang diinvite/join group lewat link
-        if (event.action === 'add' && event.who !== host) {
-            await aruga.sendTextWithMentions(event.chat, `MERHABA, Grubumuza hoşgeldiniz \n\nUmarım iyi bir vakit geçirirsiniz✨`)
-        }
-        // kondisi ketika seseorang dikick/keluar dari group
-        if (event.action === 'remove' && event.who !== host) {
-            await aruga.sendTextWithMentions(event.chat, `Hoşça kal @${event.who.replace('@c.us', '')}, Seni özleyeceğiz.✨`)
-        }
-    })
-
-    aruga.onIncomingCall(async (callData) => {
-        // ketika seseorang menelpon nomor bot akan mengirim pesan
-        await aruga.sendText(callData.peerJid, 'Üzgünüm, telefona cevap veremiyorum ENGEL!..\n\n-bot')
-        .then(async () => {
-            // bot akan memblock nomor itu
-            await aruga.contactBlock(callData.peerJid)
-        })
-    })
-
-    // ketika seseorang mengirim pesan
-    aruga.onMessage(async (message) => {
-        aruga.getAmountOfLoadedMessages() // menghapus pesan cache jika sudah 3000 pesan.
-            .then((msg) => {
-                if (msg >= 3000) {
-                    console.log('[aruga]', color(`Yüklenen Mesaj Erişimi $ {msg}, mesaj önbelleği siliniyor ...`, 'yellow'))
-                    aruga.cutMsgCache()
-                }
-            })
-        HandleMsg(aruga, message)    
-    
-    })
-	
-    // Message log for analytic
-    aruga.onAnyMessage((anal) => { 
-        messageLog(anal.fromMe, anal.type)
-    })
+/**
+ * Get text with color
+ * @param  {String} text
+ * @param  {String} color
+ * @return  {String} Return text with color
+ */
+const color = (text, color) => {
+    return !color ? chalk.blueBright(text) : chalk.keyword(color)(text)
 }
 
-//create session
-create(options(true, start))
-    .then((aruga) => start(aruga))
-    .catch((err) => new Error(err))
+// Message type Log
+const messageLog = (fromMe, type) => updateJson('utils/stat.json', (data) => {
+    (fromMe) ? (data.sent[type]) ? data.sent[type] += 1 : data.sent[type] = 1 : (data.receive[type]) ? data.receive[type] += 1 : data.receive[type] = 1
+    return data
+})
+
+/**
+ * Get Time duration
+ * @param  {Date} timestamp
+ * @param  {Date} now
+ */
+const processTime = (timestamp, now) => {
+    // timestamp => timestamp when message was received
+    return moment.duration(now - moment(timestamp * 1000)).asSeconds()
+}
+
+/**
+ * is it url?
+ * @param  {String} url
+ */
+const isUrl = (url) => {
+    return url.match(new RegExp(/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi))
+}
+
+// Message Filter / Message Cooldowns
+const usedCommandRecently = new Set()
+
+/**
+ * Check is number filtered
+ * @param  {String} from
+ */
+const isFiltered = (from) => {
+    return !!usedCommandRecently.has(from)
+}
+
+/**
+ *Download any media from URL
+ *@param {String} url
+ *@param {Path} locate
+ *@param {Callback} callback
+ */
+const download = (url, path, callback) => {
+  request.head(url, () => {
+    request(url)
+      .pipe(fs.createWriteStream(path))
+      .on('close', callback)
+  })
+}
+
+
+/**
+ * Add number to filter
+ * @param  {String} from
+ */
+const addFilter = (from) => {
+    usedCommandRecently.add(from)
+    setTimeout(() => {
+        return usedCommandRecently.delete(from)
+    }, 5000) // 5sec is delay before processing next command
+}
+
+module.exports = {
+    msgFilter: {
+        isFiltered,
+        addFilter
+    },
+    processTime,
+    isUrl,
+    color,
+    messageLog,
+	download
+}
